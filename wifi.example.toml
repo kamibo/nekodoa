@@ -1,0 +1,4 @@
+# Copy to wifi.toml and replace the value with your network password.
+# An empty value explicitly selects an open network.
+[env]
+WIFI_PASSWORD = "replace-with-your-password"

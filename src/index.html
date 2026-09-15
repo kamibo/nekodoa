@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nekodoa · GPIO monitor</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #10191d; color: #e1eceb; }
+  body { max-width: 980px; margin: auto; padding: 32px 20px; }
+  header { display: flex; justify-content: space-between; gap: 20px; align-items: center; }
+  h1 { font-size: 30px; margin: 0; letter-spacing: -.04em; }
+  h2 { font-size: 16px; font-weight: 500; color: #a7bcbc; }
+  p { color: #a7bcbc; line-height: 1.6; }
+  #status { border: 1px solid #49605f; padding: 8px 14px; border-radius: 30px; white-space: nowrap; }
+  #status.live { color: #92e6b9; border-color: #417d63; }
+  #status.offline { color: #ffc790; border-color: #99663f; }
+  .summary { display: flex; flex-wrap: wrap; gap: 12px; margin: 28px 0; }
+  .summary span { background: #1c2a2f; padding: 12px 18px; border-radius: 8px; }
+  #pins { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  article { background: #19272c; border: 1px solid #2c4147; border-radius: 10px; padding: 16px; }
+  article strong { display: block; font: 600 14px ui-monospace, monospace; color: #afc4c9; }
+  .level { font-size: 25px; margin: 12px 0 4px; font-weight: 650; }
+  .high { color: #92e6b9; } .low { color: #87c5ec; } .unknown { color: #899a9e; }
+  article small { display: block; color: #a7bcbc; line-height: 1.5; }
+  article .note { min-height: 2.8em; margin-top: 10px; color: #d2c5a8; }
+  #pins.stale { opacity: .45; }
+  .relay { margin: 24px 0; padding: 20px; border: 1px solid #49605f; border-radius: 10px; }
+  button { font: inherit; font-weight: 600; padding: 12px 20px; border: 0; border-radius: 8px; background: #92e6b9; color: #10191d; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  footer { margin-top: 28px; font-size: 13px; }
+  @media (max-width: 500px) { header { align-items: start; flex-direction: column; } }
+</style>
+<header>
+  <div><h1>nekodoa</h1><h2>ESP32 · GPIO monitor</h2></div>
+  <span id="status" role="status" aria-live="polite">Connecting…</span>
+</header>
+<p>Digital pin states, refreshed every second. Viewing this page does not change pin configuration.</p>
+<section class="relay" aria-label="Door relay control">
+  <h2>Door relay · GPIO26</h2>
+  <p id="relay-state" aria-live="polite">Waiting for relay state…</p>
+  <button id="relay-toggle" type="button" disabled>Waiting for state…</button>
+  <p>For an active-low relay: LOW activates, HIGH releases. The selected state stays until you change it or restart the board.</p>
+  <p id="relay-message" role="status" aria-live="polite"></p>
+</section>
+<div class="summary">
+  <span id="counts">Waiting for GPIO data</span>
+  <span id="uptime">Uptime —</span>
+  <span id="updated">No sample yet</span>
+</div>
+<main id="pins" aria-label="GPIO states"></main>
+<noscript><p>Enable JavaScript to see live GPIO states.</p></noscript>
+<footer><p>Unavailable means the digital input is disabled, the pin is reserved, or it is under RTC / analog control.
+  An output latch is a commanded level, not a voltage measurement. Unconnected inputs may float.
+  Flash pins are reserved; GPIO 20, 24 and 28–31 do not exist, and 37–38 are not exposed by ESP-WROOM-32.
+  Samples cannot capture brief pulses or measure analog voltages.</p></footer>
+<script>
+  const pins = document.getElementById('pins');
+  const status = document.getElementById('status');
+  const cards = new Map();
+  const relayButton = document.getElementById('relay-toggle');
+  const relayState = document.getElementById('relay-state');
+  const relayMessage = document.getElementById('relay-message');
+  let relayHigh = null;
+  let changingRelay = false;
+  let revision = 0;
+  function updateRelayButton() {
+    relayButton.disabled = changingRelay || relayHigh === null;
+    relayButton.textContent = changingRelay ? 'Applying…' : relayHigh === null ? 'Waiting for state…' : relayHigh ? 'Set LOW · activate relay' : 'Set HIGH · release relay';
+  }
+  function render(data) {
+    const relay = data.pins.find(pin => pin.pin === 26);
+    relayHigh = typeof relay?.latch === 'boolean' ? relay.latch : null;
+    relayState.textContent = relayHigh === null ? 'GPIO26 state unavailable' : 'GPIO26 output: ' + (relayHigh ? 'HIGH' : 'LOW');
+    updateRelayButton();
+    let high = 0, low = 0;
+    for (const pin of data.pins) {
+      let card = cards.get(pin.pin);
+      if (!card) {
+        card = document.createElement('article');
+        card.innerHTML = '<strong></strong><div class="level"></div><small class="mode"></small><small class="note"></small>';
+        cards.set(pin.pin, card);
+        pins.appendChild(card);
+      }
+      card.querySelector('strong').textContent = 'GPIO ' + pin.pin;
+      const measured = pin.level !== null;
+      const value = measured ? pin.level : pin.latch;
+      const level = card.querySelector('.level');
+      level.textContent = value === null ? 'Unavailable' : value ? 'HIGH' : 'LOW';
+      level.className = 'level ' + (value === null ? 'unknown' : value ? 'high' : 'low');
+      card.querySelector('.mode').textContent = pin.mode + (!measured && value !== null ? ' · latch' : '');
+      card.querySelector('.note').textContent = pin.note;
+      if (measured) { if (value) high++; else low++; }
+    }
+    document.getElementById('counts').textContent = high + ' high · ' + low + ' low · ' + (data.pins.length - high - low) + ' not measured';
+    document.getElementById('uptime').textContent = 'Uptime ' + Math.floor(data.uptime / 60) + 'm ' + data.uptime % 60 + 's';
+    document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    status.textContent = 'Live';
+    status.className = 'live';
+    pins.classList.remove('stale');
+  }
+  async function refresh() {
+    if (changingRelay) { setTimeout(refresh, 1000); return; }
+    const startedAt = revision;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch('/api/gpio', { cache: 'no-store', signal: controller.signal });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const data = await response.json();
+      if (startedAt === revision && !changingRelay) render(data);
+    } catch (_) {
+      if (startedAt !== revision || changingRelay) return;
+      status.textContent = 'Offline · retrying';
+      status.className = 'offline';
+      pins.classList.add('stale');
+      relayHigh = null;
+      relayState.textContent = 'GPIO26 state unknown · offline';
+      updateRelayButton();
+    } finally {
+      clearTimeout(timeout);
+      setTimeout(refresh, 1000);
+    }
+  }
+  async function changeRelay() {
+    if (changingRelay || relayHigh === null) return;
+    const targetHigh = !relayHigh;
+    changingRelay = true;
+    revision++;
+    updateRelayButton();
+    relayMessage.textContent = '';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch('/api/relay/' + (targetHigh ? 'high' : 'low'), {
+        method: 'POST', headers: { 'X-Relay-Control': '1' },
+        cache: 'no-store', signal: controller.signal,
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      render(await response.json());
+      relayMessage.textContent = 'State confirmed by ESP32.';
+    } catch (_) {
+      relayHigh = null;
+      relayState.textContent = 'GPIO26 state unknown';
+      relayMessage.textContent = 'Could not confirm the change. Waiting for a fresh reading; command will not be retried.';
+      pins.classList.add('stale');
+    } finally {
+      clearTimeout(timeout);
+      changingRelay = false;
+      updateRelayButton();
+    }
+  }
+  relayButton.addEventListener('click', changeRelay);
+  refresh();
+</script>
+</html>
