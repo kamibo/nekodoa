@@ -2,8 +2,12 @@
 #[derive(Debug, PartialEq)]
 pub enum Route {
     Page,
+    Logo,
     Gpio,
     SetRelay(bool),
+    AddAuthorized,
+    DeleteAuthorized,
+    SetRelayDuration,
     Forbidden,
     NotFound,
     MethodNotAllowed,
@@ -49,14 +53,73 @@ pub fn route(bytes: &[u8]) -> Route {
         }
         return Route::SetRelay(path == "/api/relay/high");
     }
+    if matches!(path, "/api/authorized/add" | "/api/authorized/delete") {
+        if method != "POST" {
+            return Route::MethodNotAllowed;
+        }
+        let authorized = text
+            .split("\r\n")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| line.split_once(':'))
+            .any(|(name, value)| {
+                name.eq_ignore_ascii_case("x-authorized-control") && value.trim() == "1"
+            });
+        if !authorized {
+            return Route::Forbidden;
+        }
+        return if path == "/api/authorized/add" {
+            Route::AddAuthorized
+        } else {
+            Route::DeleteAuthorized
+        };
+    }
+    if path == "/api/relay-duration" {
+        if method != "POST" {
+            return Route::MethodNotAllowed;
+        }
+        let authorized = text
+            .split("\r\n")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| line.split_once(':'))
+            .any(|(name, value)| {
+                name.eq_ignore_ascii_case("x-relay-control") && value.trim() == "1"
+            });
+        return if authorized {
+            Route::SetRelayDuration
+        } else {
+            Route::Forbidden
+        };
+    }
     if method != "GET" {
         return Route::MethodNotAllowed;
     }
     match path {
         "/" => Route::Page,
+        "/nekodoa.png" => Route::Logo,
         "/api/gpio" => Route::Gpio,
         _ => Route::NotFound,
     }
+}
+
+/// Extract and validate the decimal ID in `?id=...` without allocating.
+pub fn authorized_id(bytes: &[u8]) -> Option<&[u8]> {
+    let text = core::str::from_utf8(bytes).ok()?;
+    let path = text.split_whitespace().nth(1)?;
+    let value = path.split_once('?')?.1.strip_prefix("id=")?;
+    if value.is_empty() || value.len() > 20 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(value.as_bytes())
+}
+
+pub fn relay_seconds(bytes: &[u8]) -> Option<u16> {
+    let text = core::str::from_utf8(bytes).ok()?;
+    let path = text.split_whitespace().nth(1)?;
+    let value = path.split_once('?')?.1.strip_prefix("seconds=")?;
+    let seconds = value.parse().ok()?;
+    (1..=300).contains(&seconds).then_some(seconds)
 }
 
 #[cfg(test)]
@@ -67,6 +130,15 @@ mod tests {
     fn routes_and_rejects_invalid_requests() {
         assert_eq!(route(b"GET / HTTP/1.1\r\n\r\n"), Route::Page);
         assert_eq!(route(b"GET /api/gpio?t=1 HTTP/1.0\r\n\r\n"), Route::Gpio);
+        assert_eq!(route(b"GET /nekodoa.png HTTP/1.1\r\n\r\n"), Route::Logo);
+        assert_eq!(
+            route(b"POST /api/authorized/add?id=1 HTTP/1.1\r\nX-Authorized-Control: 1\r\n\r\n"),
+            Route::AddAuthorized
+        );
+        assert_eq!(
+            route(b"POST /api/relay-duration?seconds=10 HTTP/1.1\r\nX-Relay-Control: 1\r\n\r\n"),
+            Route::SetRelayDuration
+        );
         assert_eq!(route(b"GET /missing HTTP/1.1\r\n\r\n"), Route::NotFound);
         assert_eq!(
             route(b"POST /api/gpio HTTP/1.1\r\n\r\n"),
@@ -80,6 +152,13 @@ mod tests {
         ] {
             assert_eq!(route(bytes), Route::BadRequest);
         }
+    }
+
+    #[test]
+    fn accepts_reported_tag_id_without_numeric_truncation() {
+        let request = b"POST /api/authorized/add?id=900255004170212 HTTP/1.1\r\nX-Authorized-Control: 1\r\n\r\n";
+        assert_eq!(route(request), Route::AddAuthorized);
+        assert_eq!(authorized_id(request), Some(b"900255004170212".as_slice()));
     }
 
     #[test]

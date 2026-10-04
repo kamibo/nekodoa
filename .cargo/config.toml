@@ -10,3 +10,5 @@ build-std = ["alloc", "core"]
 
 [env]
 ESP_LOG = "info"
+# Captured ARCELI module frames use DHT11 integer/fraction bytes.
+DHT_MODEL = "DHT11"

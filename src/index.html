@@ -8,6 +8,8 @@
   :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #10191d; color: #e1eceb; }
   body { max-width: 980px; margin: auto; padding: 32px 20px; }
   header { display: flex; justify-content: space-between; gap: 20px; align-items: center; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo { width: 62px; height: 62px; object-fit: cover; border-radius: 16px; box-shadow: 0 0 0 1px #49605f, 0 8px 24px #0005; filter: brightness(1.14) saturate(.9); }
   h1 { font-size: 30px; margin: 0; letter-spacing: -.04em; }
   h2 { font-size: 16px; font-weight: 500; color: #a7bcbc; }
   p { color: #a7bcbc; line-height: 1.6; }
@@ -27,27 +29,82 @@
   .relay { margin: 24px 0; padding: 20px; border: 1px solid #49605f; border-radius: 10px; }
   button { font: inherit; font-weight: 600; padding: 12px 20px; border: 0; border-radius: 8px; background: #92e6b9; color: #10191d; cursor: pointer; }
   button:disabled { opacity: .45; cursor: default; }
+  .rfid-data { display: block; white-space: pre-wrap; overflow-wrap: anywhere; color: #e1eceb; }
+  #logs { max-height: 22em; overflow: auto; white-space: pre-wrap; font: 13px ui-monospace, monospace; color: #d2c5a8; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0; }
+  .tab { background: #1c2a2f; color: #a7bcbc; border: 1px solid #49605f; padding: 9px 16px; }
+  .tab.active { background: #92e6b9; color: #10191d; border-color: #92e6b9; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .log-line { display: block; padding: 2px 0; }
+  .log-info { color: #92e6b9; } .log-warn { color: #ffc790; } .log-error { color: #ff8f8f; }
+  .auth-dot { display: inline-block; width: 11px; height: 11px; margin-left: 8px; border-radius: 50%; background: #899a9e; vertical-align: middle; }
+  .auth-dot.authorized { background: #92e6b9; box-shadow: 0 0 9px #92e6b9; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #2c4147; }
+  td:last-child { text-align: right; }
+  .id-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0; }
+  .id-form input { flex: 1 1 240px; min-width: 0; font: inherit; color: #e1eceb; background: #10191d; border: 1px solid #49605f; border-radius: 8px; padding: 11px 13px; }
+  .id-form button { flex: 0 0 auto; }
   footer { margin-top: 28px; font-size: 13px; }
   @media (max-width: 500px) { header { align-items: start; flex-direction: column; } }
 </style>
 <header>
-  <div><h1>nekodoa</h1><h2>ESP32 · GPIO monitor</h2></div>
+  <div class="brand"><img class="logo" src="/nekodoa.png" alt="nekodoa logo"><div><h1>nekodoa</h1><h2>ESP32 · GPIO monitor</h2></div></div>
   <span id="status" role="status" aria-live="polite">Connecting…</span>
 </header>
 <p>Digital pin states, refreshed every second. Viewing this page does not change pin configuration.</p>
+<nav class="tabs" aria-label="Dashboard sections">
+  <button class="tab active" data-tab="overview" type="button">Overview</button>
+  <button class="tab" data-tab="rfid" type="button">RFID & IDs</button>
+  <button class="tab" data-tab="gpio" type="button">GPIO</button>
+  <button class="tab" data-tab="logs" type="button">Logs</button>
+</nav>
+<div class="tab-panel active" data-panel="overview">
+<section class="relay" aria-label="Temperature and humidity">
+  <h2 id="sensor-title">Temperature / humidity · GPIO27</h2>
+  <div class="summary">
+    <span>Temperature <strong id="temperature">—</strong></span>
+    <span>Humidity <strong id="humidity">—</strong></span>
+  </div>
+  <p id="sensor-status" role="status">Waiting for sensor…</p>
+</section>
 <section class="relay" aria-label="Door relay control">
   <h2>Door relay · GPIO26</h2>
   <p id="relay-state" aria-live="polite">Waiting for relay state…</p>
   <button id="relay-toggle" type="button" disabled>Waiting for state…</button>
   <p>For an active-low relay: LOW activates, HIGH releases. The selected state stays until you change it or restart the board.</p>
+  <form id="relay-duration-form" class="id-form"><label for="relay-duration">Authorized tag pulse (seconds)</label><input id="relay-duration" type="number" min="1" max="300" required><button type="submit">Save duration</button></form>
+  <p id="relay-duration-message" role="status"></p>
   <p id="relay-message" role="status" aria-live="polite"></p>
 </section>
+</div>
+<div class="tab-panel" data-panel="rfid">
+<section class="relay" aria-label="RFID reader">
+  <h2>WL-134 RFID · GPIO16 · 9600 8N2</h2>
+  <p>Last candidate code <code id="rfid-code" class="rfid-data">—</code><span id="rfid-auth-dot" class="auth-dot" title="Authorization unknown" aria-label="Authorization unknown"></span></p>
+  <p id="rfid-code-status">No code received yet.</p>
+  <p id="rfid-status" role="status">Waiting for reader status…</p>
+  <p id="rfid-auth-status">Authorized IDs: —</p>
+  <form id="rfid-auth-form" class="id-form"><input id="rfid-auth-id" inputmode="numeric" pattern="[0-9]{1,20}" placeholder="Decimal tag ID" required><button type="submit">Add ID</button></form>
+  <p id="rfid-auth-message" role="status"></p>
+  <table aria-label="Authorized RFID IDs"><thead><tr><th>ID</th><th>Action</th></tr></thead><tbody id="rfid-auth-list"></tbody></table>
+  <p>Last raw capture (hex)<code id="rfid-hex" class="rfid-data">—</code></p>
+  <p>ASCII preview (non-printable bytes shown as dots)<code id="rfid-ascii" class="rfid-data">—</code></p>
+  <p>WL-134 frames contain 26 hex characters plus checksum. The allow-list is stored in flash; scanning reports authorization but does not operate the door relay.</p>
+</section>
+</div>
+<div class="tab-panel" data-panel="gpio">
 <div class="summary">
   <span id="counts">Waiting for GPIO data</span>
   <span id="uptime">Uptime —</span>
   <span id="updated">No sample yet</span>
 </div>
 <main id="pins" aria-label="GPIO states"></main>
+</div>
+<div class="tab-panel" data-panel="logs">
+<section class="relay" aria-label="Recent logs"><h2>Recent logs</h2><pre id="logs">Waiting for logs…</pre></section>
+</div>
 <noscript><p>Enable JavaScript to see live GPIO states.</p></noscript>
 <footer><p>Unavailable means the digital input is disabled, the pin is reserved, or it is under RTC / analog control.
   An output latch is a commanded level, not a voltage measurement. Unconnected inputs may float.
@@ -63,11 +120,60 @@
   let relayHigh = null;
   let changingRelay = false;
   let revision = 0;
+  document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab));
+    document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.panel === tab.dataset.tab));
+  }));
   function updateRelayButton() {
     relayButton.disabled = changingRelay || relayHigh === null;
     relayButton.textContent = changingRelay ? 'Applying…' : relayHigh === null ? 'Waiting for state…' : relayHigh ? 'Set LOW · activate relay' : 'Set HIGH · release relay';
   }
   function render(data) {
+    const sensor = data.sensor;
+    document.getElementById('sensor-title').textContent = (sensor?.model || 'DHT sensor') + ' · GPIO27';
+    const validSensor = sensor?.status === 'ok' && Number.isFinite(sensor.temperature_c) && Number.isFinite(sensor.humidity_percent);
+    document.getElementById('temperature').textContent = validSensor ? sensor.temperature_c.toFixed(1) + ' °C' : '—';
+    document.getElementById('humidity').textContent = validSensor ? sensor.humidity_percent.toFixed(1) + ' % RH' : '—';
+    document.getElementById('sensor-status').textContent = validSensor
+      ? 'Sampled ' + sensor.age_seconds + 's ago · reads every 3s'
+      : 'Sensor: ' + (sensor?.status || 'waiting for data');
+    const rfid = data.rfid;
+    const duration = document.getElementById('relay-duration');
+    if (document.activeElement !== duration && Number.isFinite(rfid?.relay_seconds)) duration.value = rfid.relay_seconds;
+    const logs = document.getElementById('logs');
+    logs.replaceChildren();
+    for (const message of (data.logs || [])) {
+      const line = document.createElement('span');
+      line.className = 'log-line ' + (message.startsWith('ERROR') ? 'log-error' : message.startsWith('WARN') ? 'log-warn' : 'log-info');
+      line.textContent = message;
+      logs.appendChild(line);
+    }
+    if (!(data.logs || []).length) logs.textContent = 'No logs yet.';
+    document.getElementById('rfid-code').textContent = rfid?.code || '—';
+    const authDot = document.getElementById('rfid-auth-dot');
+    authDot.classList.toggle('authorized', rfid?.authorized === true);
+    authDot.title = rfid?.authorized === true ? 'Authorized ID' : rfid?.code ? 'ID not authorized' : 'Authorization unknown';
+    authDot.setAttribute('aria-label', authDot.title);
+    document.getElementById('rfid-code-status').textContent = rfid?.code
+      ? (rfid.authorized ? 'Authorized tag' : 'Unauthorized tag') + ' · seen ' + rfid.code_age_seconds + 's ago · ' + rfid.codes + ' code reports (not unique tags)'
+      : 'No code received yet.';
+    document.getElementById('rfid-hex').textContent = rfid?.hex || '—';
+    document.getElementById('rfid-ascii').textContent = rfid?.ascii || '—';
+    document.getElementById('rfid-status').textContent = 'Reader: ' + (rfid?.status || 'unavailable')
+      + (rfid ? ' · UART errors: ' + rfid.uart_errors + ' · line glitches: ' + (rfid.glitches || 0) : '')
+      + (rfid?.hex ? ' · last capture ' + rfid.age_seconds + 's ago · ' + rfid.boundary + ' · captures: ' + rfid.captures : ' · waiting for data');
+    document.getElementById('rfid-auth-status').textContent = rfid?.authorized_ids ? 'Authorized IDs: ' + rfid.authorized_ids.length + (rfid.authorized ? ' · last tag authorized' : '') : 'Authorized IDs unavailable';
+    const authList = document.getElementById('rfid-auth-list');
+    authList.replaceChildren();
+    for (const id of (rfid?.authorized_ids || [])) {
+      const item = document.createElement('tr');
+      const value = document.createElement('td'); value.textContent = id;
+      const action = document.createElement('td');
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.textContent = 'Delete';
+      remove.addEventListener('click', () => changeAuthorized('delete', id));
+      action.appendChild(remove); item.appendChild(value); item.appendChild(action); authList.appendChild(item);
+    }
     const relay = data.pins.find(pin => pin.pin === 26);
     relayHigh = typeof relay?.latch === 'boolean' ? relay.latch : null;
     relayState.textContent = relayHigh === null ? 'GPIO26 state unavailable' : 'GPIO26 output: ' + (relayHigh ? 'HIGH' : 'LOW');
@@ -112,6 +218,15 @@
       if (startedAt !== revision || changingRelay) return;
       status.textContent = 'Offline · retrying';
       status.className = 'offline';
+      document.getElementById('temperature').textContent = '—';
+      document.getElementById('humidity').textContent = '—';
+      document.getElementById('sensor-status').textContent = 'Sensor unavailable · board offline';
+      document.getElementById('rfid-code').textContent = '—';
+      document.getElementById('rfid-code-status').textContent = 'Reader unavailable · board offline';
+      document.getElementById('rfid-hex').textContent = '—';
+      document.getElementById('rfid-ascii').textContent = '—';
+      document.getElementById('rfid-status').textContent = 'Reader unavailable · board offline';
+      document.getElementById('logs').textContent = 'Logs unavailable · board offline';
       pins.classList.add('stale');
       relayHigh = null;
       relayState.textContent = 'GPIO26 state unknown · offline';
@@ -149,6 +264,34 @@
       updateRelayButton();
     }
   }
+  async function changeAuthorized(action, id) {
+    const message = document.getElementById('rfid-auth-message');
+    try {
+      const response = await fetch('/api/authorized/' + action + '?id=' + encodeURIComponent(id), {
+        method: 'POST', headers: { 'X-Authorized-Control': '1' }, cache: 'no-store'
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      render(await response.json()); message.textContent = action === 'add' ? 'ID added.' : 'ID deleted.';
+    } catch (_) { message.textContent = 'Could not update authorized IDs.'; }
+  }
+  document.getElementById('rfid-auth-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const input = document.getElementById('rfid-auth-id');
+    if (input.checkValidity()) { changeAuthorized('add', input.value); input.value = ''; }
+  });
+  document.getElementById('relay-duration-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const input = document.getElementById('relay-duration');
+    const message = document.getElementById('relay-duration-message');
+    if (!input.checkValidity()) return;
+    try {
+      const response = await fetch('/api/relay-duration?seconds=' + encodeURIComponent(input.value), {
+        method: 'POST', headers: { 'X-Relay-Control': '1' }, cache: 'no-store'
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      render(await response.json()); message.textContent = 'Duration saved.';
+    } catch (_) { message.textContent = 'Could not save duration.'; }
+  });
   relayButton.addEventListener('click', changeRelay);
   refresh();
 </script>

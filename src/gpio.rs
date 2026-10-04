@@ -35,7 +35,10 @@ pub fn snapshot() -> String {
             37 | 38 => "Not exposed on WROOM-32",
             1 => "UART0 TX / serial log",
             3 => "UART0 RX",
+            16 => "RFID UART2 RX / 9600 8N2",
+            17 => "RFID UART2 TX / 9600 8N2",
             26 => "Door relay; default HIGH",
+            27 => "DHT temperature / humidity",
             0 | 2 | 5 | 12 | 15 => "Boot strap pin",
             34..=39 => "Input only; no internal pulls",
             _ => "",
@@ -82,7 +85,11 @@ pub fn snapshot() -> String {
         }
         write!(json, "{{\"pin\":{pin},\"level\":{level},\"latch\":{latch},\"mode\":\"{mode}\",\"note\":\"{note}\"}}").unwrap();
     }
-    json.push_str("]}");
+    json.push(']');
+    crate::dht22::append_json(&mut json);
+    crate::rfid::append_json(&mut json);
+    crate::logs::append_json(&mut json);
+    json.push('}');
     json
 }
 

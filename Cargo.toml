@@ -14,6 +14,7 @@ bench = false
 critical-section = "1.2.0"
 embassy-executor = "0.10.0"
 embassy-net = { version = "0.9.1", features = ["dhcpv4", "medium-ethernet", "tcp"] }
+embassy-sync = "0.8.0"
 esp32 = { version = "0.41.0", default-features = false }
 embassy-time = "0.5.0"
 esp-alloc = "0.10.0"
@@ -22,9 +23,12 @@ esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32"] }
 esp-hal = { version = "~1.1.0", features = ["esp32", "unstable"] }
 esp-println = { version = "0.17.0", features = ["esp32", "log-04"] }
 esp-radio = { version = "0.18.0", features = ["esp32", "wifi"] }
+esp-rom-sys = { version = "0.1.5", features = ["esp32"] }
 esp-rtos = { version = "0.3.0", features = ["esp32", "embassy", "esp-radio", "esp-alloc"] }
 log = "0.4.27"
 static_cell = "2.1.1"
+esp-storage = { version = "0.8.1", features = ["esp32"] }
+embedded-storage = "0.3.1"
 
 [profile.dev]
 opt-level = "s"
@@ -34,3 +38,10 @@ codegen-units = 1
 debug = 2
 lto = "fat"
 opt-level = "s"
+
+# ESP32 flash ROM wrappers must be optimized while running from RAM.
+[profile.dev.package.esp-storage]
+opt-level = 3
+
+[profile.release.package.esp-storage]
+opt-level = 3

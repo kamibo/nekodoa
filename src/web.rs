@@ -7,6 +7,7 @@ use embassy_net::{
 use embassy_time::{Duration, with_timeout};
 
 const PAGE: &str = include_str!("index.html");
+const LOGO: &[u8] = include_bytes!("nekodoa.png");
 
 #[embassy_executor::task(pool_size = 2)]
 pub async fn serve(stack: Stack<'static>) {
@@ -56,6 +57,55 @@ async fn handle(socket: &mut TcpSocket<'_>) -> Result<(), Error> {
             let json = crate::gpio::snapshot();
             respond(socket, "200 OK", "application/json", &json).await
         }
+        Route::AddAuthorized | Route::DeleteAuthorized => {
+            let Some(id) = http::authorized_id(&request[..used]) else {
+                return respond(
+                    socket,
+                    "400 Bad Request",
+                    "text/plain",
+                    "Use ?id=decimal-id",
+                )
+                .await;
+            };
+            let changed = if matches!(http::route(&request[..used]), Route::AddAuthorized) {
+                crate::rfid::add_authorized(id)
+            } else {
+                crate::rfid::delete_authorized(id)
+            };
+            if !changed {
+                return respond(
+                    socket,
+                    "409 Conflict",
+                    "text/plain",
+                    "Authorization list is full or ID was not present",
+                )
+                .await;
+            }
+            let json = crate::gpio::snapshot();
+            respond(socket, "200 OK", "application/json", &json).await
+        }
+        Route::SetRelayDuration => {
+            let Some(seconds) = http::relay_seconds(&request[..used]) else {
+                return respond(
+                    socket,
+                    "400 Bad Request",
+                    "text/plain",
+                    "Use ?seconds=1..300",
+                )
+                .await;
+            };
+            if !crate::rfid::set_relay_seconds(seconds) {
+                return respond(
+                    socket,
+                    "400 Bad Request",
+                    "text/plain",
+                    "Duration must be 1..300 seconds",
+                )
+                .await;
+            }
+            let json = crate::gpio::snapshot();
+            respond(socket, "200 OK", "application/json", &json).await
+        }
         Route::Forbidden => {
             respond(
                 socket,
@@ -66,6 +116,7 @@ async fn handle(socket: &mut TcpSocket<'_>) -> Result<(), Error> {
             .await
         }
         Route::Page => respond(socket, "200 OK", "text/html; charset=utf-8", PAGE).await,
+        Route::Logo => respond_bytes(socket, "200 OK", "image/png", LOGO).await,
         Route::Gpio => {
             let json = crate::gpio::snapshot();
             respond(socket, "200 OK", "application/json", &json).await
@@ -96,6 +147,21 @@ async fn respond(
     );
     write_all(socket, headers.as_bytes()).await?;
     write_all(socket, body.as_bytes()).await?;
+    socket.flush().await
+}
+
+async fn respond_bytes(
+    socket: &mut TcpSocket<'_>,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), Error> {
+    let headers = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: public, max-age=86400\r\nX-Content-Type-Options: nosniff\r\n\r\n",
+        body.len()
+    );
+    write_all(socket, headers.as_bytes()).await?;
+    write_all(socket, body).await?;
     socket.flush().await
 }
 
