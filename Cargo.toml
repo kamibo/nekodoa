@@ -29,6 +29,7 @@ log = "0.4.27"
 static_cell = "2.1.1"
 esp-storage = { version = "0.8.1", features = ["esp32"] }
 embedded-storage = "0.3.1"
+sha2 = { version = "0.10.9", default-features = false }
 
 [profile.dev]
 opt-level = "s"

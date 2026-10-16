@@ -78,6 +78,13 @@
   <p id="relay-duration-message" role="status"></p>
   <p id="relay-message" role="status" aria-live="polite"></p>
 </section>
+<section class="relay" aria-label="Firmware update">
+  <h2>Firmware update over Wi-Fi</h2>
+  <p>Select a locally built application .bin file. The relay must be HIGH with no pending pulse. The door stays closed during the update. Anyone who can reach this dashboard can upload firmware.</p>
+  <form id="ota-form" class="id-form"><input id="ota-file" type="file" accept=".bin,application/octet-stream" aria-label="Application firmware binary" required><button id="ota-submit" type="submit">Upload firmware</button></form>
+  <progress id="ota-progress" max="100" value="0" aria-label="Firmware upload progress"></progress>
+  <p id="ota-message" role="status" aria-live="polite">Use the application-only binary exported by tools/export-ota.sh.</p>
+</section>
 </div>
 <div class="tab-panel" data-panel="rfid">
 <section class="relay" aria-label="RFID reader">
@@ -117,6 +124,7 @@
   const relayButton = document.getElementById('relay-toggle');
   const relayState = document.getElementById('relay-state');
   const relayMessage = document.getElementById('relay-message');
+  let otaBusy = false;
   let relayHigh = null;
   let changingRelay = false;
   let revision = 0;
@@ -125,10 +133,11 @@
     document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.panel === tab.dataset.tab));
   }));
   function updateRelayButton() {
-    relayButton.disabled = changingRelay || relayHigh === null;
+    relayButton.disabled = otaBusy || changingRelay || relayHigh === null;
     relayButton.textContent = changingRelay ? 'Applying…' : relayHigh === null ? 'Waiting for state…' : relayHigh ? 'Set LOW · activate relay' : 'Set HIGH · release relay';
   }
   function render(data) {
+    currentSlot = data.ota?.slot ?? currentSlot;
     const sensor = data.sensor;
     document.getElementById('sensor-title').textContent = (sensor?.model || 'DHT sensor') + ' · GPIO27';
     const validSensor = sensor?.status === 'ok' && Number.isFinite(sensor.temperature_c) && Number.isFinite(sensor.humidity_percent);
@@ -205,7 +214,7 @@
     pins.classList.remove('stale');
   }
   async function refresh() {
-    if (changingRelay) { setTimeout(refresh, 1000); return; }
+    if (otaBusy || changingRelay) { setTimeout(refresh, 1000); return; }
     const startedAt = revision;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
@@ -237,7 +246,7 @@
     }
   }
   async function changeRelay() {
-    if (changingRelay || relayHigh === null) return;
+    if (otaBusy || changingRelay || relayHigh === null) return;
     const targetHigh = !relayHigh;
     changingRelay = true;
     revision++;
@@ -265,6 +274,7 @@
     }
   }
   async function changeAuthorized(action, id) {
+    if (otaBusy) return;
     const message = document.getElementById('rfid-auth-message');
     try {
       const response = await fetch('/api/authorized/' + action + '?id=' + encodeURIComponent(id), {
@@ -281,6 +291,7 @@
   });
   document.getElementById('relay-duration-form').addEventListener('submit', async event => {
     event.preventDefault();
+    if (otaBusy) return;
     const input = document.getElementById('relay-duration');
     const message = document.getElementById('relay-duration-message');
     if (!input.checkValidity()) return;
@@ -292,6 +303,85 @@
       render(await response.json()); message.textContent = 'Duration saved.';
     } catch (_) { message.textContent = 'Could not save duration.'; }
   });
+  function setOtaBusy(busy) {
+    otaBusy = busy;
+    document.getElementById('ota-submit').disabled = busy;
+    document.getElementById('ota-file').disabled = busy;
+    document.querySelectorAll('#rfid-auth-form input, #rfid-auth-form button, #rfid-auth-list button, #relay-duration-form input, #relay-duration-form button').forEach(item => item.disabled = busy);
+    revision++;
+    updateRelayButton();
+  }
+  async function reconnectOta(previousSlot, deadline, accepted = true) {
+    const message = document.getElementById('ota-message');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch('/api/gpio', { cache: 'no-store', signal: controller.signal });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.ota?.ready && (!accepted || data.uptime < 150)) {
+          render(data);
+          message.textContent = data.ota.slot === previousSlot
+            ? (accepted ? 'Board reconnected to the previous firmware. The update rolled back.' : 'Previous firmware is running. Upload failed or rolled back.')
+            : 'Board reconnected. New firmware passed startup verification.';
+          setOtaBusy(false);
+          return;
+        }
+      }
+    } catch (_) { /* Keep waiting through the reboot and startup check. */ }
+    finally { clearTimeout(timeout); }
+    if (Date.now() >= deadline) {
+      message.textContent = 'Could not confirm startup. Reconnect to Wi-Fi and reload; USB recovery is available.';
+      setOtaBusy(false);
+      return;
+    }
+    setTimeout(() => reconnectOta(previousSlot, deadline, accepted), 2000);
+  }
+  let currentSlot = null;
+  async function uploadFirmware(event) {
+    event.preventDefault();
+    if (otaBusy) return;
+    const file = document.getElementById('ota-file').files?.[0];
+    const message = document.getElementById('ota-message');
+    if (!file || file.size < 288 || file.size > 1966080) {
+      message.textContent = 'Choose an application .bin file between 288 and 1966080 bytes.';
+      return;
+    }
+    setOtaBusy(true);
+    const previousSlot = currentSlot;
+    const progress = document.getElementById('ota-progress');
+    progress.value = 0;
+    message.textContent = 'Uploading firmware… Keep this page open.';
+    const request = new XMLHttpRequest();
+    request.open('POST', '/api/ota');
+    request.setRequestHeader('X-OTA-Control', '1');
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+    request.timeout = 310000;
+    request.upload.onprogress = event => {
+      if (event.lengthComputable) progress.value = Math.round(event.loaded / event.total * 100);
+      if (progress.value === 100) message.textContent = 'Upload sent. Validating firmware…';
+    };
+    request.onload = () => {
+      if (request.status !== 200) {
+        message.textContent = 'Update rejected: ' + (request.responseText || 'HTTP ' + request.status);
+        setOtaBusy(false);
+        return;
+      }
+      progress.value = 100;
+      message.textContent = 'Firmware accepted. Restarting and checking startup (about 30–90 seconds)…';
+      status.textContent = 'Restarting…';
+      setTimeout(() => reconnectOta(previousSlot, Date.now() + 150000), 2000);
+    };
+    const failed = () => {
+      message.textContent = 'Upload connection lost. Checking whether the board restarted…';
+      setTimeout(() => reconnectOta(previousSlot, Date.now() + 150000, false), 2000);
+    };
+    request.onerror = failed;
+    request.ontimeout = failed;
+    request.onabort = failed;
+    request.send(file);
+  }
+  document.getElementById('ota-form').addEventListener('submit', uploadFirmware);
   relayButton.addEventListener('click', changeRelay);
   refresh();
 </script>

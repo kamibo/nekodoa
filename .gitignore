@@ -1,2 +1,6 @@
 /target/
 /wifi.toml
+/bootloader/build/
+/bootloader/sdkconfig
+/bootloader/sdkconfig.old
+/tests/host/target/

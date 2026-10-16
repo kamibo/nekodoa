@@ -1,6 +1,7 @@
 //! Small, bounded HTTP request router, also testable on the host.
 #[derive(Debug, PartialEq)]
 pub enum Route {
+    Ota,
     Page,
     Logo,
     Gpio,
@@ -19,7 +20,8 @@ pub fn headers_complete(bytes: &[u8]) -> bool {
 }
 
 pub fn route(bytes: &[u8]) -> Route {
-    let Ok(text) = core::str::from_utf8(bytes) else {
+    let end = header_end(bytes).unwrap_or(bytes.len());
+    let Ok(text) = core::str::from_utf8(&bytes[..end]) else {
         return Route::BadRequest;
     };
     let Some(line) = text.split("\r\n").next() else {
@@ -34,6 +36,22 @@ pub fn route(bytes: &[u8]) -> Route {
         return Route::BadRequest;
     }
     let path = path.split('?').next().unwrap_or("");
+    if path == "/api/ota" {
+        if method != "POST" {
+            return Route::MethodNotAllowed;
+        }
+        return if text
+            .split("\r\n")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| line.split_once(':'))
+            .any(|(name, value)| name.eq_ignore_ascii_case("x-ota-control") && value.trim() == "1")
+        {
+            Route::Ota
+        } else {
+            Route::Forbidden
+        };
+    }
     if matches!(path, "/api/relay/high" | "/api/relay/low") {
         if method != "POST" {
             return Route::MethodNotAllowed;
@@ -120,6 +138,32 @@ pub fn relay_seconds(bytes: &[u8]) -> Option<u16> {
     let value = path.split_once('?')?.1.strip_prefix("seconds=")?;
     let seconds = value.parse().ok()?;
     (1..=300).contains(&seconds).then_some(seconds)
+}
+
+/// Offset of body; binary bytes received with headers must be retained.
+pub fn header_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+}
+pub fn ota_length(bytes: &[u8]) -> Option<usize> {
+    let text = core::str::from_utf8(&bytes[..header_end(bytes)?]).ok()?;
+    let mut length = None;
+    for line in text.split("\r\n").skip(1).take_while(|l| !l.is_empty()) {
+        let (name, value) = line.split_once(':')?;
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return None;
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            let value = value.trim();
+            if length.is_some() || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            length = Some(value.parse::<usize>().ok()?);
+        }
+    }
+    length.filter(|&n| (288..=0x1e0000).contains(&n))
 }
 
 #[cfg(test)]

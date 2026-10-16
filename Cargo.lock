@@ -1316,6 +1316,7 @@ dependencies = [
  "esp-storage",
  "esp32 0.41.0",
  "log",
+ "sha2",
  "static_cell",
 ]
 

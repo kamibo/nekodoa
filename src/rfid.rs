@@ -137,6 +137,9 @@ fn publish_code(code: Option<[u8; DATA_LEN]>) {
 }
 
 pub fn add_authorized(id: &[u8]) -> bool {
+    if crate::relay::updating() {
+        return false;
+    }
     if id.is_empty() || id.len() > ID_LEN || !id.iter().all(u8::is_ascii_digit) {
         return false;
     }
@@ -164,6 +167,9 @@ pub fn add_authorized(id: &[u8]) -> bool {
 }
 
 pub fn delete_authorized(id: &[u8]) -> bool {
+    if crate::relay::updating() {
+        return false;
+    }
     let changed = critical_section::with(|cs| {
         let mut state = STATE.borrow(cs).get();
         let Some(index) = (0..usize::from(state.id_count))
@@ -257,6 +263,9 @@ pub fn init(
 }
 
 pub fn set_relay_seconds(seconds: u16) -> bool {
+    if crate::relay::updating() {
+        return false;
+    }
     if !(1..=300).contains(&seconds) {
         return false;
     }

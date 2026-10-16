@@ -22,7 +22,7 @@ function element() {
   };
 }
 
-const nodes = new Map(['pins', 'status', 'counts', 'uptime', 'updated', 'relay-toggle', 'relay-state', 'relay-message', 'relay-duration-form', 'relay-duration', 'relay-duration-message', 'temperature', 'humidity', 'sensor-status', 'sensor-title', 'rfid-code', 'rfid-auth-dot', 'rfid-code-status', 'rfid-status', 'rfid-hex', 'rfid-ascii', 'rfid-auth-form', 'rfid-auth-id', 'rfid-auth-message', 'rfid-auth-status', 'rfid-auth-list', 'logs'].map(id => [id, element()]));
+const nodes = new Map(['pins', 'status', 'counts', 'uptime', 'updated', 'relay-toggle', 'relay-state', 'relay-message', 'relay-duration-form', 'relay-duration', 'relay-duration-message', 'temperature', 'humidity', 'sensor-status', 'sensor-title', 'rfid-code', 'rfid-auth-dot', 'rfid-code-status', 'rfid-status', 'rfid-hex', 'rfid-ascii', 'rfid-auth-form', 'rfid-auth-id', 'rfid-auth-message', 'rfid-auth-status', 'rfid-auth-list', 'logs', 'ota-form', 'ota-file', 'ota-submit', 'ota-progress', 'ota-message'].map(id => [id, element()]));
 const data = {
   uptime: 65,
   rfid: { status: 'listening', uart_errors: 0, glitches: 0, captures: 0, hex: null, ascii: null, code: null },
@@ -33,6 +33,13 @@ const data = {
     latch: pin === 2 || pin === 26 ? true : null, mode: pin === 2 || pin === 26 ? 'Output' : 'Input', note: '',
   })),
 };
+const uploads = [];
+class FakeXHR {
+  constructor() { this.upload = {}; uploads.push(this); }
+  open(method, path) { assert.equal(method, 'POST'); assert.equal(path, '/api/ota'); }
+  setRequestHeader(name,value) { (this.headers ??= {})[name] = value; }
+  send(file) { this.file = file; }
+}
 let offline = false;
 let failCommand = false;
 const commands = [];
@@ -40,7 +47,7 @@ const timers = new Map();
 let timerId = 0;
 const context = vm.createContext({
   document: { getElementById: id => nodes.get(id), createElement: element, querySelectorAll: () => [] },
-  AbortController, Date,
+  AbortController, Date, XMLHttpRequest: FakeXHR,
   setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
   clearTimeout(id) { timers.delete(id); },
   async fetch(path, options) {
@@ -159,3 +166,34 @@ delete data.rfid;
 await context.refresh();
 assert.match(nodes.get('rfid-status').textContent, /unavailable/);
 console.log('Dashboard checks passed: GPIO, relay, DHT, RFID candidates/raw data/errors, offline and recovery.');
+
+const submitOta = () => vm.runInContext('uploadFirmware({preventDefault(){}})', context);
+nodes.get('ota-file').files = [{size: 336, name: 'app.bin'}];
+await submitOta();
+assert.equal(uploads.length, 1);
+assert.equal(uploads[0].headers['X-OTA-Control'], '1');
+assert.equal(nodes.get('relay-toggle').disabled, true);
+assert.equal(nodes.get('ota-submit').disabled, true);
+await submitOta(); assert.equal(uploads.length, 1, 'concurrent upload blocked');
+uploads[0].upload.onprogress({lengthComputable:true,loaded:168,total:336});
+assert.equal(nodes.get('ota-progress').value, 50);
+uploads[0].status = 409; uploads[0].responseText = 'relay active'; uploads[0].onload();
+assert.match(nodes.get('ota-message').textContent, /rejected.*relay active/);
+assert.equal(nodes.get('ota-submit').disabled, false);
+await submitOta(); uploads[1].status = 200; uploads[1].onload();
+assert.match(nodes.get('ota-message').textContent, /Restarting/);
+assert.equal(nodes.get('ota-progress').value, 100);
+data.ota = {ready:true,slot:1}; data.uptime = 40; offline = false;
+await vm.runInContext('reconnectOta(0, Date.now()+150000)', context);
+assert.match(nodes.get('ota-message').textContent,/passed startup verification/);
+assert.equal(nodes.get('ota-submit').disabled, false);
+await submitOta(); uploads[2].onerror();
+assert.match(nodes.get('ota-message').textContent,/connection lost/);
+await vm.runInContext('reconnectOta(1, Date.now()+150000)', context);
+assert.match(nodes.get('ota-message').textContent,/previous firmware/);
+data.ota.ready = false;
+await vm.runInContext('reconnectOta(0, Date.now()-1)', context);
+assert.match(nodes.get('ota-message').textContent,/Could not confirm/);
+nodes.get('ota-file').files = [{size:1966081}]; await submitOta();
+assert.equal(uploads.length,3);
+console.log('OTA dashboard checks passed: progress, rejection, concurrency, restart, reconnect, rollback and failure.');

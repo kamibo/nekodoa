@@ -1,21 +1,8 @@
 //! Small persistent authorization record in a reserved flash sector.
-//! The default 4 MiB ESP32 flash layout leaves this sector outside the app.
+//! partitions.csv reserves this sector outside both OTA application slots.
 
 #[cfg(not(test))]
 const ADDRESS: u32 = 0x3F0000;
-#[cfg(not(test))]
-use core::cell::RefCell;
-#[cfg(not(test))]
-use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
-#[cfg(not(test))]
-static FLASH: critical_section::Mutex<RefCell<Option<esp_storage::FlashStorage<'static>>>> =
-    critical_section::Mutex::new(RefCell::new(None));
-
-#[cfg(not(test))]
-pub fn init(flash: esp_hal::peripherals::FLASH<'static>) {
-    let storage = esp_storage::FlashStorage::new(flash);
-    critical_section::with(|cs| *FLASH.borrow(cs).borrow_mut() = Some(storage));
-}
 const MAGIC: &[u8; 4] = b"NKA2";
 pub const DEFAULT_RELAY_SECONDS: u16 = 10;
 pub const MAX_IDS: usize = 8;
@@ -29,16 +16,13 @@ struct Record([u8; RECORD_LEN.next_multiple_of(4)]);
 #[cfg(not(test))]
 pub fn load(ids: &mut [[u8; ID_LEN]; MAX_IDS], lengths: &mut [u8; MAX_IDS]) -> (usize, u16, bool) {
     let mut data = Record([0; RECORD_LEN.next_multiple_of(4)]);
-    let read = critical_section::with(|cs| {
-        let mut flash = FLASH.borrow(cs).borrow_mut();
-        flash
-            .as_mut()
-            .is_some_and(|flash| flash.read(ADDRESS, &mut data.0).is_ok())
-    });
+    let read = crate::flash::read(ADDRESS, &mut data.0);
     if !read {
         return (0, DEFAULT_RELAY_SECONDS, false);
     }
-    decode(&data.0, ids, lengths)
+    let decoded = decode(&data.0, ids, lengths);
+    crate::ota::settings_loaded(decoded.2 || data.0.iter().all(|&byte| byte == 0xff));
+    decoded
 }
 
 fn decode(
@@ -125,13 +109,7 @@ pub fn save(
     let Some(data) = encode(ids, lengths, count, seconds) else {
         return false;
     };
-    critical_section::with(|cs| {
-        let mut flash = FLASH.borrow(cs).borrow_mut();
-        let Some(flash) = flash.as_mut() else {
-            return false;
-        };
-        flash.erase(ADDRESS, ADDRESS + 4096).is_ok() && flash.write(ADDRESS, &data.0).is_ok()
-    })
+    crate::flash::erase_sector(ADDRESS) && crate::flash::write(ADDRESS, &data.0)
 }
 
 #[cfg(test)]

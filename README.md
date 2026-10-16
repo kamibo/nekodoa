@@ -76,13 +76,10 @@ To build without Wi-Fi credentials:
 cargo build --release --locked
 ```
 
-Connect the board with a USB data cable, then flash and open the serial monitor:
-
-```sh
-cargo --config wifi.toml run --release --locked
-```
-
-To select a serial port explicitly:
+For dashboard OTA, first build and install the rollback-enabled bootloader as
+shown below. USB installation requires an explicit port and uses this verified
+bootloader; the default espflash bootloader does not provide our rollback guarantee.
+Once the bootloader artifacts exist, Cargo can install and open the monitor:
 
 ```sh
 cargo --config wifi.toml run --release --locked -- --port /dev/ttyUSB0
@@ -131,6 +128,152 @@ take effect when rebuilding the firmware.
 
 Wi-Fi initialization and reconnection follow Espressif's
 [esp-radio 0.18 DHCP example](https://github.com/esp-rs/esp-hal/blob/esp-radio-v0.18.0/examples/wifi/embassy_dhcp/src/main.rs).
+
+## Dashboard firmware updates and rollback
+
+One USB migration is required before Wi-Fi updates. The target is the original
+ESP32 with at least 4 MiB flash. Updates have **no password**: anyone who can
+reach the dashboard can install a locally built application. The required
+`X-OTA-Control: 1` header prevents ordinary cross-origin forms; it is not authentication.
+Firmware embeds the configured Wi-Fi password, so keep exported files private.
+
+The exact layout in `partitions.csv` is checked on-device before enabling OTA:
+
+| Region | Offset | Size |
+| --- | --- | --- |
+| NVS | `0x9000` | `0x5000` |
+| OTA metadata (two sectors) | `0xE000` | `0x2000` |
+| `ota_0` | `0x10000` | `0x1E0000` |
+| `ota_1` | `0x1F0000` | `0x1E0000` |
+| Existing authorization record | `0x3F0000` | `0x1000` |
+
+### Build and initial USB migration
+
+Use ESP-IDF **v5.5.1**, commit `fcae32885b0296b32044cb99ecbdc50d98dddb83`,
+with its recommended Xtensa GCC 14.2.0 toolchain. Either activate this IDF
+installation (`. /path/to/esp-idf/export.sh`) or install Docker and let the
+script use the official `espressif/idf:v5.5.1` image. Build the rollback bootloader
+and partition table, then export the Rust app with the existing Wi-Fi credentials:
+
+```sh
+# Load the espup environment first if the Xtensa linker is not on PATH.
+. "$HOME/export-esp.sh"
+tools/build-bootloader.sh
+tools/export-ota.sh
+```
+
+The IDF project enables `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` and disables
+anti-rollback. No eFuses are burned. The scripts verify the bootloader size and
+configuration, partition table contents/MD5, and application size/checksums.
+The application-only file is `target/ota/nekodoa.bin`; do not upload an ELF,
+bootloader, partition table, merged flash image or multipart form.
+Application metadata uses a fixed date/time for repeatable exports. Repeatable
+artifacts require the same toolchain, espflash version (tested with 4.5.0),
+Cargo.lock, source, credentials, build path and build configuration. The bootloader
+script fixes `SOURCE_DATE_EPOCH`. Generated IDF settings and builds are ignored
+by Git; remove `bootloader/sdkconfig` before regenerating defaults after configuration changes.
+
+Connect USB, stop other serial monitors, and run:
+
+```sh
+tools/install-ota.sh /dev/ttyUSB0
+```
+
+This script checks physical flash size, saves a complete 4 MiB backup under
+`target/ota/backup-<UTC timestamp>.bin`, and validates that the existing app at
+`0x10000` fits the retained slot. It writes the new app to `ota_1`, the partition
+table, two OTA metadata records (retained `ota_0` VALID and new `ota_1` NEW), and
+finally the custom bootloader. It never erases the whole chip or writes the
+sector containing authorized tag IDs and pulse duration. The previous slot is
+retained until the next successful OTA upload needs that inactive slot.
+The full backup uses 115200 baud and `--max-in-flight 1` by default. Espflash
+4.5.0 clears serial input when sending each read acknowledgment; a one-packet
+window prevents that from discarding pipelined flash data and causing timeouts.
+The script prints a status message every ten seconds. A full backup takes at
+least six minutes at 115200 baud; the file is populated when the read completes.
+For a USB connection that supports a faster speed, set `ESPFLASH_BAUD=460800`
+before the install command (or `cargo run`).
+The script is intended for migration or USB recovery; it refuses an erased board
+or an existing app too large to preserve. Keep the backup until hardware checks pass.
+
+### Upload and startup behavior
+
+Open the dashboard Overview tab, select `target/ota/nekodoa.bin`, and click
+**Upload firmware**. Progress covers transfer, followed by image validation,
+restart and reconnection. A changed slot passing startup verification is reported
+as success; a return to the previous slot is reported as rollback. A lost upload
+response can mean interruption or restart, so the dashboard checks the board
+again instead of retrying the upload automatically.
+
+The API accepts `POST /api/ota` with exactly one decimal `Content-Length` and
+`X-OTA-Control: 1`; Transfer-Encoding is rejected. Size is limited to the 1,966,080-byte
+slot. Upload uses a bounded 1024-byte buffer, sector erases and aligned writes to
+only the inactive slot. Headers are limited to 1024 bytes and five seconds;
+upload inactivity is limited to ten seconds and total transfer to five minutes.
+The app validates the ESP32 chip ID, application descriptor, segment boundaries,
+load-address ranges, XOR checksum, and optional image SHA256 before updating boot
+selection. It rejects trailing bytes and merged images. No critical section spans
+an asynchronous wait. The settings record and OTA share one protected flash owner.
+
+The server rejects concurrent updates, an active LOW relay, an active tag pulse,
+or a pending pulse. It atomically blocks relay commands and RFID pulse requests
+while an accepted upload owns the update lock. Settings changes receive HTTP 409.
+Abandoned/invalid uploads leave boot metadata untouched, clear pending requests
+and restore relay operation. An uncertain metadata write triggers a reset with
+the relay locked, so the bootloader resolves the last valid selection.
+
+The bootloader tries a NEW app once and changes it to PENDING_VERIFY. The firmware
+holds the relay HIGH during verification and arms a 60-second hardware watchdog
+before settings, UART and network startup. It confirms the running slot only
+after 30 consecutive healthy seconds: relay initialized HIGH, authorization data
+loaded (or an erased record selecting defaults), Wi-Fi link and DHCP up, and HTTP
+service ready. Corrupt settings, missing network, failed checks or a stalled
+startup leave it unconfirmed; a watchdog reset lets the bootloader return to the
+previous valid app. On an already confirmed image the startup watchdog is disabled;
+normal network reconnection continues without forcing resets. The previous
+slot's metadata is preserved during activation and confirmation. See
+[ESP-IDF v5.5.1 rollback behavior](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32/api-reference/system/ota.html#app-rollback).
+
+### Verification and USB recovery
+
+Run `tools/export-ota.sh` before host checks, then:
+
+```sh
+tools/test-host.sh
+# Requires bootloader artifacts; exercises USB writes against a simulated flash.
+python3 tests/installation.py
+```
+
+Host checks exercise the actual router, image validator, flash-write/activation
+logic and relay gate: binary body bytes arriving alongside fragmented headers,
+invalid/duplicate lengths, wrong chip, truncation, checksum/hash corruption,
+interrupted uploads, concurrent lock attempts, both slot directions and activation
+only after complete validation. Dashboard checks cover progress, rejection,
+transfer failure, restart, reconnection and rollback messages.
+
+Hardware verification remains required before relying on door operation:
+
+1. Record the tag IDs and pulse duration. Migrate over USB; confirm GPIO26 stays
+   HIGH and startup completes with these settings preserved.
+2. Upload in both directions, checking slot changes and the 30-second confirmation.
+3. Interrupt an upload, including power loss, and verify the previous firmware boots.
+4. Upload a test build with deliberately failing startup checks or a stalled task;
+   verify reset within 60 seconds, previous-slot boot and settings preservation.
+5. During an upload and pending startup, send relay/settings commands and scan an
+   authorized tag. Confirm HTTP 409, no LOW pulse and no deferred pulse after failure.
+6. Check active/pending pulses reject an upload without changing relay behavior.
+
+If the board cannot return to Wi-Fi, hold BOOT while connecting a USB flasher and
+re-run the verified USB installation script. To restore the exact pre-migration
+firmware manually, use the complete backup (including authorization data):
+
+```sh
+espflash write-bin --chip esp32 --port /dev/ttyUSB0 0 target/ota/backup-<timestamp>.bin
+```
+
+That restores the original flash layout and bootloader; reinstall the OTA layout
+before using dashboard updates again. USB installation and physical rollback,
+power-loss and relay tests cannot be certified by host tests alone.
 
 ## WL-134 RFID reader
 
@@ -191,8 +334,8 @@ a dedicated 4 KiB flash sector, so it survives reset and power loss. The
 dashboard can add or delete decimal IDs (up to eight entries total); these
 operations use POST requests with `X-Authorized-Control: 1` and `?id=`.
 Flash access uses `esp-storage` with critical sections and word-aligned buffers.
-The firmware reserves sector `0x3F0000` near the end of the standard 4 MiB
-ESP32 flash layout. Do not use that sector in a custom partition table. Each
+The OTA partition table explicitly reserves sector `0x3F0000` for this record.
+Do not allocate it to another use. Each
 change rewrites the sector, so this is intended for occasional list management
 rather than rapid automated updates.
 
@@ -302,7 +445,7 @@ in the `[env]` section of `.cargo/config.toml` (or `wifi.toml`), then rebuild an
 flash. An environment variable also overrides the default:
 
 ```sh
-DHT_MODEL=DHT22 cargo --config wifi.toml run --release --locked -- --baud 115200
+DHT_MODEL=DHT22 cargo --config wifi.toml run --release --locked -- --port /dev/ttyUSB0
 ```
 
 DHT11 uses a 20 ms start pulse; DHT22 uses 2 ms. Both retain a three-second

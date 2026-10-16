@@ -14,15 +14,14 @@ pub async fn serve(stack: Stack<'static>) {
     let mut rx = [0; 2048];
     let mut tx = [0; 2048];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
-    socket.set_timeout(Some(Duration::from_secs(5)));
+    socket.set_timeout(Some(Duration::from_secs(10)));
     loop {
         stack.wait_config_up().await;
+        crate::ota::http_ready();
         if socket.accept(80).await.is_ok() {
-            // Bound the entire request, including clients trickling partial headers.
-            if matches!(
-                with_timeout(Duration::from_secs(5), handle(&mut socket)).await,
-                Ok(Ok(()))
-            ) {
+            // Header/upload reads and response writes each enforce absolute deadlines.
+            // Once metadata is committed, no outer timeout may cancel the restart.
+            if handle(&mut socket).await.is_ok() {
                 socket.close();
                 let _ = with_timeout(Duration::from_secs(2), socket.flush()).await;
             }
@@ -35,6 +34,7 @@ pub async fn serve(stack: Stack<'static>) {
 async fn handle(socket: &mut TcpSocket<'_>) -> Result<(), Error> {
     let mut request = [0; 1024];
     let mut used = 0;
+    let header_start = embassy_time::Instant::now();
     while !http::headers_complete(&request[..used]) {
         if used == request.len() {
             return respond(
@@ -45,15 +45,51 @@ async fn handle(socket: &mut TcpSocket<'_>) -> Result<(), Error> {
             )
             .await;
         }
-        let count = socket.read(&mut request[used..]).await?;
+        let count = match with_timeout(
+            Duration::from_millis(5000u64.saturating_sub(header_start.elapsed().as_millis())),
+            socket.read(&mut request[used..]),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => return Ok(()),
+        };
         if count == 0 {
             return Ok(());
         }
         used += count;
     }
-    match http::route(&request[..used]) {
+    let end = http::header_end(&request[..used]).unwrap();
+    let route = http::route(&request[..end]);
+    if crate::relay::updating()
+        && matches!(
+            route,
+            Route::SetRelay(_)
+                | Route::AddAuthorized
+                | Route::DeleteAuthorized
+                | Route::SetRelayDuration
+        )
+    {
+        return respond(
+            socket,
+            "409 Conflict",
+            "text/plain",
+            "Firmware update in progress",
+        )
+        .await;
+    }
+    match route {
+        Route::Ota => upload(socket, &request[..end], &request[end..used]).await,
         Route::SetRelay(high) => {
-            crate::relay::set(high);
+            if !crate::relay::set(high) {
+                return respond(
+                    socket,
+                    "409 Conflict",
+                    "text/plain",
+                    "Firmware update in progress",
+                )
+                .await;
+            }
             let json = crate::gpio::snapshot();
             respond(socket, "200 OK", "application/json", &json).await
         }
@@ -147,7 +183,9 @@ async fn respond(
     );
     write_all(socket, headers.as_bytes()).await?;
     write_all(socket, body.as_bytes()).await?;
-    socket.flush().await
+    with_timeout(Duration::from_secs(2), socket.flush())
+        .await
+        .unwrap_or(Err(Error::ConnectionReset))
 }
 
 async fn respond_bytes(
@@ -162,16 +200,111 @@ async fn respond_bytes(
     );
     write_all(socket, headers.as_bytes()).await?;
     write_all(socket, body).await?;
-    socket.flush().await
+    with_timeout(Duration::from_secs(2), socket.flush())
+        .await
+        .unwrap_or(Err(Error::ConnectionReset))
 }
 
 async fn write_all(socket: &mut TcpSocket<'_>, mut bytes: &[u8]) -> Result<(), Error> {
+    let started = embassy_time::Instant::now();
     while !bytes.is_empty() {
-        let count = socket.write(bytes).await?;
+        let count = with_timeout(
+            Duration::from_millis(5000u64.saturating_sub(started.elapsed().as_millis())),
+            socket.write(bytes),
+        )
+        .await
+        .map_err(|_| Error::ConnectionReset)??;
         if count == 0 {
             return Err(Error::ConnectionReset);
         }
         bytes = &bytes[count..];
     }
     Ok(())
+}
+
+async fn upload(socket: &mut TcpSocket<'_>, headers: &[u8], initial: &[u8]) -> Result<(), Error> {
+    let Some(length) = http::ota_length(headers) else {
+        return respond(
+            socket,
+            "400 Bad Request",
+            "text/plain",
+            "Require one Content-Length (288..1966080); no Transfer-Encoding",
+        )
+        .await;
+    };
+    if initial.len() > length {
+        return respond(
+            socket,
+            "400 Bad Request",
+            "text/plain",
+            "Body exceeds Content-Length",
+        )
+        .await;
+    }
+    let mut update = match crate::ota::Upload::begin(length) {
+        Ok(update) => update,
+        Err(message) => return respond(socket, "409 Conflict", "text/plain", message).await,
+    };
+    let mut buffer = crate::ota::Buffer([0xff; 1024]);
+    let mut received = 0;
+    let mut filled = initial.len();
+    buffer.0[..filled].copy_from_slice(initial);
+    let upload_start = embassy_time::Instant::now();
+    let mut last_activity = embassy_time::Instant::now();
+    while received < length {
+        if upload_start.elapsed().as_secs() >= 300 {
+            return respond(
+                socket,
+                "408 Request Timeout",
+                "text/plain",
+                "Upload exceeded five minutes",
+            )
+            .await;
+        }
+        let target = core::cmp::min(1024, length - received);
+        while filled < target {
+            let timeout = Duration::from_millis(core::cmp::min(
+                10_000u64.saturating_sub(last_activity.elapsed().as_millis()),
+                300_000u64.saturating_sub(upload_start.elapsed().as_millis()),
+            ));
+            let count =
+                match with_timeout(timeout, socket.read(&mut buffer.0[filled..target])).await {
+                    Ok(Ok(count)) if count > 0 => count,
+                    _ => {
+                        return respond(
+                            socket,
+                            "408 Request Timeout",
+                            "text/plain",
+                            "Upload interrupted or idle for 10 seconds",
+                        )
+                        .await;
+                    }
+                };
+            last_activity = embassy_time::Instant::now();
+            filled += count;
+        }
+        if let Err(message) = update.chunk(&mut buffer, target).await {
+            return respond(socket, "400 Bad Request", "text/plain", message).await;
+        }
+        received += target;
+        filled = 0;
+    }
+    if let Err(message) = update.activate(upload_start) {
+        return respond(socket, "400 Bad Request", "text/plain", message).await;
+    }
+    // Activation is committed; even a lost response must lead to a reset.
+    let _ = with_timeout(
+        Duration::from_secs(2),
+        respond(
+            socket,
+            "200 OK",
+            "text/plain",
+            "Firmware accepted. Restarting; reconnect after startup verification.",
+        ),
+    )
+    .await;
+    socket.close();
+    let _ = with_timeout(Duration::from_secs(2), socket.flush()).await;
+    embassy_time::Timer::after_millis(250).await;
+    esp_hal::system::software_reset();
 }

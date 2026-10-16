@@ -89,6 +89,14 @@ pub fn snapshot() -> String {
     crate::dht22::append_json(&mut json);
     crate::rfid::append_json(&mut json);
     crate::logs::append_json(&mut json);
+    write!(
+        json,
+        ",\"ota\":{{\"ready\":{},\"updating\":{},\"slot\":{}}}",
+        crate::ota::ready(),
+        crate::relay::updating(),
+        crate::flash::booted_slot().map_or(-1, |slot| slot as i32)
+    )
+    .unwrap();
     json.push('}');
     json
 }
