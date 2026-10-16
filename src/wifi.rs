@@ -1,6 +1,6 @@
 use embassy_executor::Spawner;
 use embassy_net::{Runner, Stack, StackResources};
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use esp_hal::{peripherals::WIFI, rng::Rng};
 use esp_radio::wifi::{
     AuthenticationMethod, Config, ControllerConfig, Interface, WifiController, sta::StationConfig,
@@ -45,16 +45,34 @@ async fn connection(mut controller: WifiController<'static>) {
     loop {
         log::info!("Connecting to Wi-Fi: {}", SSID);
         match controller.connect_async().await {
-            Ok(_) => {
-                log::info!("Wi-Fi connected; waiting for DHCP");
+            Ok(info) => {
+                let connected_at = Instant::now();
+                log::info!(
+                    "Wi-Fi connected to {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} on channel {}; waiting for DHCP",
+                    info.bssid[0],
+                    info.bssid[1],
+                    info.bssid[2],
+                    info.bssid[3],
+                    info.bssid[4],
+                    info.bssid[5],
+                    info.channel,
+                );
                 match controller.wait_for_disconnect_async().await {
-                    Ok(reason) => log::warn!("Wi-Fi disconnected: {:?}", reason),
+                    Ok(reason) => log::warn!(
+                        "Wi-Fi disconnected after {}s: {:?}",
+                        connected_at.elapsed().as_secs(),
+                        reason,
+                    ),
                     Err(error) => log::warn!("Wi-Fi disconnect wait failed: {:?}", error),
                 }
+                // Reassociate promptly; a failed attempt below still backs off.
+                log::info!("Reconnecting to Wi-Fi immediately");
             }
-            Err(error) => log::warn!("Wi-Fi connection failed: {:?}", error),
+            Err(error) => {
+                log::warn!("Wi-Fi connection failed: {:?}; retrying in 5s", error);
+                Timer::after_secs(5).await;
+            }
         }
-        Timer::after_secs(5).await;
     }
 }
 

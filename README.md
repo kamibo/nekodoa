@@ -29,8 +29,10 @@ The firmware logs startup and connection changes over UART0, accessible through
 the board's USB serial bridge at 115200 baud.
 
 Wi-Fi connects to `las capelles 12`, obtains an IPv4 address using DHCP, and
-logs connection changes and the assigned address. It retries five seconds
-after a failed connection or disconnect.
+logs connection changes and the assigned address. It reconnects immediately
+after a disconnect and waits five seconds after a failed connection attempt.
+Connection logs include the access-point BSSID and channel; disconnect logs
+include how long the connection lasted and the driver's reason and RSSI.
 
 ## Setup
 
