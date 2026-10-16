@@ -105,7 +105,7 @@ pub fn validate(length: usize, mut read: impl FnMut(usize, &mut [u8]) -> bool) -
         let address = word(&sh) as usize;
         let size = word(&sh[4..]) as usize;
         offset += 8;
-        if size == 0 || size % 4 != 0 || size > length - offset {
+        if size == 0 || !size.is_multiple_of(4) || size > length - offset {
             return false;
         }
         // ESP32 loadable / mapped application memory ranges (including padding).
@@ -201,7 +201,7 @@ impl UploadedImage {
             return false;
         }
         let address = self.address() + self.written as u32;
-        if self.written % 4096 == 0 && !erase(address) {
+        if self.written.is_multiple_of(4096) && !erase(address) {
             return false;
         }
         let padded = size.next_multiple_of(4);

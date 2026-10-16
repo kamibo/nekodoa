@@ -79,7 +79,7 @@ pub async fn sample(pin: GPIO27<'static>) {
             consecutive_errors = consecutive_errors.saturating_add(1);
             // Capture within the timing window, print only after interrupts are
             // restored. Rate-limit persistent faults to avoid flooding UART.
-            if consecutive_errors <= 3 || consecutive_errors % 10 == 0 {
+            if consecutive_errors <= 3 || consecutive_errors.is_multiple_of(10) {
                 let raw = dht_frame::unpack_for(capture.frame, model);
                 let checksum = capture.frame[..4]
                     .iter()
