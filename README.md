@@ -27,6 +27,8 @@ C6, or S3, it needs a different target and chip features.
 
 The firmware logs startup and connection changes over UART0, accessible through
 the board's USB serial bridge at 115200 baud.
+Serial and dashboard log lines include elapsed time since boot in
+`LEVEL [HH:MM:SS.mmm] - message` format; hours continue past 24.
 
 Wi-Fi connects to `las capelles 12`, obtains an IPv4 address using DHCP, and
 logs connection changes and the assigned address. It reconnects immediately

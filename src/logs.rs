@@ -4,7 +4,8 @@ use core::{cell::RefCell, fmt::Write};
 use critical_section::Mutex;
 
 const CAPACITY: usize = 32;
-const LINE_LEN: usize = 192;
+// Leave room for the timestamp without reducing the existing message budget.
+const LINE_LEN: usize = 224;
 
 #[derive(Clone, Copy)]
 struct Line {
@@ -64,7 +65,21 @@ impl log::Log for Logger {
             bytes: [0; LINE_LEN],
             len: 0,
         };
-        let _ = write!(&mut line, "{} - {}", record.level(), record.args());
+        // HAL time is available for startup logs before the async timer is started.
+        let millis = esp_hal::time::Instant::now()
+            .duration_since_epoch()
+            .as_millis();
+        let seconds = millis / 1000;
+        let _ = write!(
+            &mut line,
+            "{} [{:02}:{:02}:{:02}.{:03}] - {}",
+            record.level(),
+            seconds / 3600,
+            (seconds / 60) % 60,
+            seconds % 60,
+            millis % 1000,
+            record.args(),
+        );
         let text = core::str::from_utf8(&line.bytes[..line.len]).unwrap_or("invalid log");
         critical_section::with(|cs| {
             let mut ring = RING.borrow_ref_mut(cs);
