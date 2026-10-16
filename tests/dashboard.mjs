@@ -22,10 +22,10 @@ function element() {
   };
 }
 
-const nodes = new Map(['pins', 'status', 'counts', 'uptime', 'updated', 'relay-toggle', 'relay-state', 'relay-message', 'relay-duration-form', 'relay-duration', 'relay-duration-message', 'temperature', 'humidity', 'sensor-status', 'sensor-title', 'rfid-code', 'rfid-auth-dot', 'rfid-code-status', 'rfid-status', 'rfid-hex', 'rfid-ascii', 'rfid-auth-form', 'rfid-auth-id', 'rfid-auth-message', 'rfid-auth-status', 'rfid-auth-list', 'logs', 'ota-form', 'ota-file', 'ota-submit', 'ota-progress', 'ota-message'].map(id => [id, element()]));
+const nodes = new Map(['pins', 'status', 'counts', 'uptime', 'updated', 'cat-unlocks', 'relay-toggle', 'relay-state', 'relay-message', 'relay-duration-form', 'relay-duration', 'relay-duration-message', 'temperature', 'humidity', 'sensor-status', 'sensor-title', 'rfid-code', 'rfid-auth-dot', 'rfid-code-status', 'rfid-status', 'rfid-hex', 'rfid-ascii', 'rfid-auth-form', 'rfid-auth-id', 'rfid-auth-message', 'rfid-auth-status', 'rfid-auth-list', 'logs', 'ota-form', 'ota-file', 'ota-submit', 'ota-progress', 'ota-message'].map(id => [id, element()]));
 const data = {
   uptime: 65,
-  rfid: { status: 'listening', uart_errors: 0, glitches: 0, captures: 0, hex: null, ascii: null, code: null },
+  rfid: { unlocks: 0, status: 'listening', uart_errors: 0, glitches: 0, captures: 0, hex: null, ascii: null, code: null },
   logs: ['INFO - booted', 'WARN - test'],
   sensor: { model: 'DHT11', status: 'ok', temperature_c: 23.4, humidity_percent: 56.7, age_seconds: 1 },
   pins: Array.from({ length: 40 }, (_, pin) => ({
@@ -80,6 +80,7 @@ assert.equal(nodes.get('status').textContent, 'Live');
 assert.equal(nodes.get('temperature').textContent, '23.4 °C');
 assert.equal(nodes.get('sensor-title').textContent, 'DHT11 · GPIO27');
 assert.equal(nodes.get('humidity').textContent, '56.7 % RH');
+assert.equal(nodes.get('cat-unlocks').textContent, '0');
 assert.equal(nodes.get('rfid-code').textContent, '—');
 assert.match(nodes.get('rfid-status').textContent, /listening.*waiting for data/);
 assert.equal(nodes.get('relay-toggle').disabled, false);
@@ -142,8 +143,9 @@ await context.refresh();
 assert.equal(nodes.get('temperature').textContent, '—');
 assert.equal(nodes.get('sensor-status').textContent, 'Sensor: stale');
 const commandsBeforeRfid = commands.length;
-data.rfid = { status: 'received', uart_errors: 0, glitches: 3, captures: 2, hex: '02 30 31 03', ascii: '<script>"\\', boundary: 'idle gap', age_seconds: 4, code: '0123456789ABCDEF', code_age_seconds: 4, codes: 2 };
+data.rfid = { unlocks: 7, status: 'received', uart_errors: 0, glitches: 3, captures: 2, hex: '02 30 31 03', ascii: '<script>"\\', boundary: 'idle gap', age_seconds: 4, code: '0123456789ABCDEF', code_age_seconds: 4, codes: 2 };
 await context.refresh();
+assert.equal(nodes.get('cat-unlocks').textContent, '7');
 assert.equal(nodes.get('rfid-code').textContent, '0123456789ABCDEF');
 assert.match(nodes.get('rfid-code-status').textContent, /Unauthorized tag.*4s ago.*not unique tags/);
 assert.equal(nodes.get('rfid-hex').textContent, '02 30 31 03');
@@ -159,12 +161,18 @@ offline = true;
 await context.refresh();
 assert.equal(nodes.get('rfid-code').textContent, '—');
 assert.equal(nodes.get('rfid-ascii').textContent, '—');
+assert.equal(nodes.get('cat-unlocks').textContent, '—');
 offline = false;
 await context.refresh();
 assert.equal(nodes.get('rfid-code').textContent, '0123456789ABCDEF');
+assert.equal(nodes.get('cat-unlocks').textContent, '7', 'reconnect restores the device counter');
+data.rfid.unlocks = 0;
+await context.refresh();
+assert.equal(nodes.get('cat-unlocks').textContent, '0', 'restart can reset the device counter');
 delete data.rfid;
 await context.refresh();
 assert.match(nodes.get('rfid-status').textContent, /unavailable/);
+assert.equal(nodes.get('cat-unlocks').textContent, '—');
 console.log('Dashboard checks passed: GPIO, relay, DHT, RFID candidates/raw data/errors, offline and recovery.');
 
 const submitOta = () => vm.runInContext('uploadFirmware({preventDefault(){}})', context);

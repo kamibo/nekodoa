@@ -45,6 +45,9 @@ pub fn request_pulse(seconds: u16) {
 pub fn updating() -> bool {
     critical_section::with(|cs| RELAY.borrow_ref(cs).gate.updating)
 }
+pub fn unlocks() -> u64 {
+    critical_section::with(|cs| RELAY.borrow_ref(cs).gate.unlocks)
+}
 pub fn begin_update() -> bool {
     critical_section::with(|cs| {
         let mut state = RELAY.borrow_ref_mut(cs);

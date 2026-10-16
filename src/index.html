@@ -71,6 +71,7 @@
 </section>
 <section class="relay" aria-label="Door relay control">
   <h2>Door relay · GPIO26</h2>
+  <div class="summary"><span>Cat unlocks <strong id="cat-unlocks">—</strong> · since restart</span></div>
   <p id="relay-state" aria-live="polite">Waiting for relay state…</p>
   <button id="relay-toggle" type="button" disabled>Waiting for state…</button>
   <p>For an active-low relay: LOW activates, HIGH releases. The selected state stays until you change it or restart the board.</p>
@@ -98,7 +99,7 @@
   <table aria-label="Authorized RFID IDs"><thead><tr><th>ID</th><th>Action</th></tr></thead><tbody id="rfid-auth-list"></tbody></table>
   <p>Last raw capture (hex)<code id="rfid-hex" class="rfid-data">—</code></p>
   <p>ASCII preview (non-printable bytes shown as dots)<code id="rfid-ascii" class="rfid-data">—</code></p>
-  <p>WL-134 frames contain 26 hex characters plus checksum. The allow-list is stored in flash; scanning reports authorization but does not operate the door relay.</p>
+  <p>WL-134 frames contain 26 hex characters plus checksum. The allow-list is stored in flash. Authorized tags trigger the door relay; Cat unlocks counts these activations since restart.</p>
 </section>
 </div>
 <div class="tab-panel" data-panel="gpio">
@@ -147,6 +148,7 @@
       ? 'Sampled ' + sensor.age_seconds + 's ago · reads every 3s'
       : 'Sensor: ' + (sensor?.status || 'waiting for data');
     const rfid = data.rfid;
+    document.getElementById('cat-unlocks').textContent = Number.isFinite(rfid?.unlocks) ? String(rfid.unlocks) : '—';
     const duration = document.getElementById('relay-duration');
     if (document.activeElement !== duration && Number.isFinite(rfid?.relay_seconds)) duration.value = rfid.relay_seconds;
     const logs = document.getElementById('logs');
@@ -229,6 +231,7 @@
       status.className = 'offline';
       document.getElementById('temperature').textContent = '—';
       document.getElementById('humidity').textContent = '—';
+      document.getElementById('cat-unlocks').textContent = '—';
       document.getElementById('sensor-status').textContent = 'Sensor unavailable · board offline';
       document.getElementById('rfid-code').textContent = '—';
       document.getElementById('rfid-code-status').textContent = 'Reader unavailable · board offline';

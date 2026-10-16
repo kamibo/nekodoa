@@ -382,7 +382,13 @@ pub fn append_json(json: &mut String) {
         write!(json, "{age},\"hex\":\"{}\",\"ascii\":", state.last.hex()).unwrap();
         state.last.append_ascii_json(json);
     }
-    write!(json, ",\"codes\":{},\"code\":", state.codes).unwrap();
+    write!(
+        json,
+        ",\"unlocks\":{},\"codes\":{},\"code\":",
+        crate::relay::unlocks(),
+        state.codes
+    )
+    .unwrap();
     if let Some(code) = state.code {
         let age = embassy_time::Instant::now()
             .as_secs()

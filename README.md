@@ -350,6 +350,11 @@ duration from 1–300 seconds and stores it in the same persistent flash record.
 Unauthorized tags produce a WARN log containing the decoded number and never
 activate the relay.
 Counts include repeated reports; they are not counts of unique tags.
+The Overview tab's **Cat unlocks** counter (`rfid.unlocks` in the API) counts
+RFID-triggered relay HIGH-to-LOW transitions, rather than individual tag reports.
+Manual relay changes and detections blocked during a firmware update do not
+increment it. It survives page refreshes and Wi-Fi reconnects and resets on board
+restart; it is not written to flash and does not confirm physical door movement.
 The last code remains visible with its age until reset, even if later input is
 invalid or the reader is disconnected. `listening` means the UART is configured,
 not that a reader has been detected. Browser network loss clears the display.
